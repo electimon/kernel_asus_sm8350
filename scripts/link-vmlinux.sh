@@ -73,7 +73,7 @@ modpost_link()
 
 	objects="--whole-archive				\
 		${KBUILD_VMLINUX_OBJS}				\
-		--no-whole-archive				\
+		built-in.a					\
 		--start-group					\
 		${KBUILD_VMLINUX_LIBS}				\
 		--end-group"
@@ -128,7 +128,6 @@ vmlinux_link()
 			# link again.
 			objects="--whole-archive		\
 				vmlinux.o 			\
-				--no-whole-archive		\
 				${@}"
 
 			if [ -n "${CONFIG_QCOM_RTIC}" ] &&	\
@@ -138,7 +137,6 @@ vmlinux_link()
 		else
 			objects="--whole-archive		\
 				${KBUILD_VMLINUX_OBJS}		\
-				--no-whole-archive		\
 				--start-group			\
 				${KBUILD_VMLINUX_LIBS}		\
 				--end-group			\
@@ -152,7 +150,6 @@ vmlinux_link()
 	else
 		objects="-Wl,--whole-archive			\
 			${KBUILD_VMLINUX_OBJS}			\
-			-Wl,--no-whole-archive			\
 			-Wl,--start-group			\
 			${KBUILD_VMLINUX_LIBS}			\
 			-Wl,--end-group				\
