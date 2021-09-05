@@ -8,6 +8,7 @@
 #include <linux/io.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>//ASUS_BSP +++ for DMIC TX
 #include <linux/pm_runtime.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -48,13 +49,9 @@
 #define TX_MACRO_DMIC_HPF_DELAY_MS	300
 #define TX_MACRO_AMIC_HPF_DELAY_MS	300
 
-static int tx_amic_unmute_delay = TX_MACRO_AMIC_UNMUTE_DELAY_MS;
-module_param(tx_amic_unmute_delay, int, 0664);
-MODULE_PARM_DESC(tx_amic_unmute_delay, "delay to unmute the tx amic path");
-
-static int tx_dmic_unmute_delay = TX_MACRO_DMIC_UNMUTE_DELAY_MS;
-module_param(tx_dmic_unmute_delay, int, 0664);
-MODULE_PARM_DESC(tx_dmic_unmute_delay, "delay to unmute the tx dmic path");
+static int tx_unmute_delay = TX_MACRO_DMIC_UNMUTE_DELAY_MS;
+module_param(tx_unmute_delay, int, 0664);
+MODULE_PARM_DESC(tx_unmute_delay, "delay to unmute the tx path");
 
 static const DECLARE_TLV_DB_SCALE(digital_gain, 0, 1, 0);
 
@@ -163,6 +160,14 @@ struct tx_macro_priv {
 	struct hpf_work tx_hpf_work[NUM_DECIMATORS];
 	struct tx_mute_work tx_mute_dwork[NUM_DECIMATORS];
 	u16 dmic_clk_div;
+//ASUS_BSP +++ for DMIC TX
+#if defined ASUS_VODKA_PROJECT
+	struct regulator *micb_supply;
+	u32 micb_voltage;
+	u32 micb_current;
+	int micb_users;
+#endif
+//ASUS_BSP --- for DMIC TX
 	u32 version;
 	u32 is_used_tx_swr_gpio;
 	unsigned long active_ch_mask[TX_MACRO_MAX_DAIS];
@@ -353,6 +358,9 @@ static int tx_macro_swr_pwr_event(struct snd_soc_dapm_widget *w,
 	dev_dbg(tx_dev, "%s: event = %d, lpi_enable = %d\n",
 		__func__, event, tx_priv->lpi_enable);
 
+	if (!tx_priv->lpi_enable)
+		return ret;
+
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
 		if (tx_priv->lpi_enable) {
@@ -496,8 +504,7 @@ static bool is_amic_enabled(struct snd_soc_component *component, int decimator)
 	adc_mux_reg = BOLERO_CDC_TX_INP_MUX_ADC_MUX0_CFG1 +
 			TX_MACRO_ADC_MUX_CFG_OFFSET * decimator;
 	if (snd_soc_component_read32(component, adc_mux_reg) & SWR_MIC) {
-		if (tx_priv->version == BOLERO_VERSION_2_1 ||
-			tx_priv->version == BOLERO_VERSION_2_0)
+		if (tx_priv->version == BOLERO_VERSION_2_1)
 			return true;
 		adc_reg = BOLERO_CDC_TX_INP_MUX_ADC_MUX0_CFG0 +
 			TX_MACRO_ADC_MUX_CFG_OFFSET * decimator;
@@ -1103,16 +1110,13 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 		if (is_amic_enabled(component, decimator)) {
 			hpf_delay = TX_MACRO_AMIC_HPF_DELAY_MS;
 			unmute_delay = TX_MACRO_AMIC_UNMUTE_DELAY_MS;
-			if (unmute_delay < tx_amic_unmute_delay)
-				unmute_delay = tx_amic_unmute_delay;
-		} else {
-			if (unmute_delay < tx_dmic_unmute_delay)
-				unmute_delay = tx_dmic_unmute_delay;
 		}
+		if (tx_unmute_delay < unmute_delay)
+			tx_unmute_delay = unmute_delay;
 		/* schedule work queue to Remove Mute */
 		queue_delayed_work(system_freezable_wq,
 				   &tx_priv->tx_mute_dwork[decimator].dwork,
-				   msecs_to_jiffies(unmute_delay));
+				   msecs_to_jiffies(tx_unmute_delay));
 		if (tx_priv->tx_hpf_work[decimator].hpf_cut_off_freq !=
 							CF_MIN_3DB_150HZ) {
 			queue_delayed_work(system_freezable_wq,
@@ -1251,6 +1255,69 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 static int tx_macro_enable_micbias(struct snd_soc_dapm_widget *w,
 			struct snd_kcontrol *kcontrol, int event)
 {
+//ASUS_BSP +++ for DMIC TX
+#if defined ASUS_VODKA_PROJECT
+	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+	struct device *tx_dev = NULL;
+	struct tx_macro_priv *tx_priv = NULL;
+	int ret = 0;
+
+	if (!tx_macro_get_data(component, &tx_dev, &tx_priv, __func__))
+		return -EINVAL;
+
+	if (!tx_priv->micb_supply) {
+		dev_err(tx_dev,
+			"%s:regulator not provided in dtsi\n", __func__);
+		return -EINVAL;
+	}
+	switch (event) {
+		case SND_SOC_DAPM_PRE_PMU:
+			if (tx_priv->micb_users++ > 0)
+				return 0;
+			ret = regulator_set_voltage(tx_priv->micb_supply,
+									tx_priv->micb_voltage,
+									tx_priv->micb_voltage);
+			if (ret) {
+				dev_err(tx_dev, "%s: Setting voltage failed, err = %d\n",
+					__func__, ret);
+				return ret;
+			}
+			ret = regulator_set_load(tx_priv->micb_supply,
+									tx_priv->micb_current);
+			if (ret) {
+				dev_err(tx_dev, "%s: Setting current failed, err = %d\n",
+						__func__, ret);
+				return ret;
+			}
+			ret = regulator_enable(tx_priv->micb_supply);
+			if (ret) {
+				dev_err(tx_dev, "%s: regulator enable failed, err = %d\n",
+						__func__, ret);
+				return ret;
+			}
+			break;
+		case SND_SOC_DAPM_POST_PMD:
+			if (--tx_priv->micb_users > 0)
+				return 0;
+			if (tx_priv->micb_users < 0) {
+				tx_priv->micb_users = 0;
+				dev_dbg(tx_dev, "%s: regulator already disabled\n",
+						__func__);
+				return 0;
+			}
+			ret = regulator_disable(tx_priv->micb_supply);
+			if (ret) {
+				dev_err(tx_dev, "%s: regulator disable failed, err = %d\n",
+						__func__, ret);
+				return ret;
+			}
+			regulator_set_voltage(tx_priv->micb_supply, 0,
+									tx_priv->micb_voltage);
+			regulator_set_load(tx_priv->micb_supply, 0);
+			break;
+	}
+#endif
+//ASUS_BSP --- for DMIC TX
 	return 0;
 }
 
@@ -2923,25 +2990,22 @@ ret:
 
 static int tx_macro_core_vote(void *handle, bool enable)
 {
-	int rc = 0;
 	struct tx_macro_priv *tx_priv = (struct tx_macro_priv *) handle;
 
 	if (tx_priv == NULL) {
 		pr_err("%s: tx priv data is NULL\n", __func__);
 		return -EINVAL;
 	}
-
 	if (enable) {
 		pm_runtime_get_sync(tx_priv->dev);
-		if (bolero_check_core_votes(tx_priv->dev))
-			rc = 0;
-		else
-			rc = -ENOTSYNC;
-	} else {
 		pm_runtime_put_autosuspend(tx_priv->dev);
 		pm_runtime_mark_last_busy(tx_priv->dev);
 	}
-	return rc;
+
+	if (bolero_check_core_votes(tx_priv->dev))
+		return 0;
+	else
+		return -EINVAL;
 }
 
 static int tx_macro_swrm_clock(void *handle, bool enable)
@@ -3418,9 +3482,21 @@ static int tx_macro_probe(struct platform_device *pdev)
 	struct tx_macro_priv *tx_priv = NULL;
 	u32 tx_base_addr = 0, sample_rate = 0;
 	char __iomem *tx_io_base = NULL;
+//ASUS_BSP +++ for DMIC TX
+#if defined ASUS_VODKA_PROJECT
+	const char *micb_supply_str = "tx-vdd-micb-supply";
+	const char *micb_supply_str1 = "tx-vdd-micb";
+	const char *micb_voltage_str = "qcom,tx-vdd-micb-voltage";
+	const char *micb_current_str = "qcom,tx-vdd-micb-current";
+#endif
+//ASUS_BSP --- for DMIC TX
 	int ret = 0;
 	const char *dmic_sample_rate = "qcom,tx-dmic-sample-rate";
+#if defined ASUS_VODKA_PROJECT
+	u32 is_used_tx_swr_gpio = 0;
+#else
 	u32 is_used_tx_swr_gpio = 1;
+#endif
 	const char *is_used_tx_swr_gpio_dt = "qcom,is-used-swr-gpio";
 	u32 disable_afe_wakeup_event_listener = 0;
 	const char *disable_afe_wakeup_event_listener_dt =
@@ -3455,7 +3531,11 @@ static int tx_macro_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(&pdev->dev, "%s: error reading %s in dt\n",
 				__func__, is_used_tx_swr_gpio_dt);
+#if defined ASUS_VODKA_PROJECT
+			is_used_tx_swr_gpio = 0;
+#else
 			is_used_tx_swr_gpio = 1;
+#endif
 		}
 	}
 	tx_priv->tx_swr_gpio_p = of_parse_phandle(pdev->dev.of_node,
@@ -3471,6 +3551,42 @@ static int tx_macro_probe(struct platform_device *pdev)
 			__func__);
 		return -EPROBE_DEFER;
 	}
+
+//ASUS_BSP +++ for DMIC TX
+#if defined ASUS_VODKA_PROJECT
+	if (of_parse_phandle(pdev->dev.of_node, micb_supply_str, 0)) {
+		tx_priv->micb_supply = devm_regulator_get(&pdev->dev,
+										micb_supply_str1);
+		if (IS_ERR(tx_priv->micb_supply)) {
+			ret = PTR_ERR(tx_priv->micb_supply);
+			dev_err(&pdev->dev,
+					"%s:Failed to get micbias supply for VA Mic %d\n",
+					__func__, ret);
+			return ret;
+		}
+		ret = of_property_read_u32(pdev->dev.of_node,
+									micb_voltage_str,
+									&tx_priv->micb_voltage);
+		if (ret) {
+			dev_err(&pdev->dev,
+					"%s:Looking up %s property in node %s failed\n",
+					__func__, micb_voltage_str,
+					pdev->dev.of_node->full_name);
+			return ret;
+		}
+		ret = of_property_read_u32(pdev->dev.of_node,
+									micb_current_str,
+									&tx_priv->micb_current);
+		if (ret) {
+			dev_err(&pdev->dev,
+					"%s:Looking up %s property in node %s failed\n",
+					__func__, micb_current_str,
+					pdev->dev.of_node->full_name);
+			return ret;
+		}
+	}
+#endif
+//ASUS_BSP --- for DMIC TX
 
 	tx_io_base = devm_ioremap(&pdev->dev,
 				   tx_base_addr, TX_MACRO_MAX_OFFSET);
@@ -3529,13 +3645,13 @@ static int tx_macro_probe(struct platform_device *pdev)
 			"%s: register macro failed\n", __func__);
 		goto err_reg_macro;
 	}
+	if (is_used_tx_swr_gpio)
+		schedule_work(&tx_priv->tx_macro_add_child_devices_work);
 	pm_runtime_set_autosuspend_delay(&pdev->dev, AUTO_SUSPEND_DELAY);
 	pm_runtime_use_autosuspend(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
 	pm_suspend_ignore_children(&pdev->dev, true);
 	pm_runtime_enable(&pdev->dev);
-	if (is_used_tx_swr_gpio)
-		schedule_work(&tx_priv->tx_macro_add_child_devices_work);
 
 	return 0;
 err_reg_macro:

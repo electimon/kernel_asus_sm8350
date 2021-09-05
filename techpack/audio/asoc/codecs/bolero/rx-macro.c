@@ -1280,7 +1280,6 @@ static int rx_macro_mclk_enable(struct rx_macro_priv *rx_priv,
 							   rx_priv->default_clk_id,
 							   rx_priv->clk_id,
 							   true);
-			rx_macro_core_vote(rx_priv, false);
 			if (ret < 0) {
 				dev_err(rx_priv->dev,
 					"%s: rx request clock enable failed\n",
@@ -1335,7 +1334,6 @@ static int rx_macro_mclk_enable(struct rx_macro_priv *rx_priv,
 						 rx_priv->default_clk_id,
 						 rx_priv->clk_id,
 						 false);
-			rx_macro_core_vote(rx_priv, false);
 			rx_priv->clk_id = rx_priv->default_clk_id;
 		}
 	}
@@ -1455,11 +1453,11 @@ static int rx_macro_event_handler(struct snd_soc_component *component,
 				"%s, failed to enable clk, ret:%d\n",
 				__func__, ret);
 		} else {
+			rx_macro_core_vote(rx_priv, true);
 			bolero_clk_rsc_request_clock(rx_priv->dev,
 						rx_priv->default_clk_id,
 						RX_CORE_CLK, false);
 		}
-		rx_macro_core_vote(rx_priv, false);
 		break;
 	case BOLERO_MACRO_EVT_SSR_UP:
 		trace_printk("%s, enter SSR up\n", __func__);
@@ -3737,25 +3735,22 @@ static const struct snd_soc_dapm_route rx_audio_map[] = {
 
 static int rx_macro_core_vote(void *handle, bool enable)
 {
-	int rc = 0;
 	struct rx_macro_priv *rx_priv = (struct rx_macro_priv *) handle;
 
 	if (rx_priv == NULL) {
 		pr_err("%s: rx priv data is NULL\n", __func__);
 		return -EINVAL;
 	}
-
 	if (enable) {
 		pm_runtime_get_sync(rx_priv->dev);
-		if (bolero_check_core_votes(rx_priv->dev))
-			rc = 0;
-		else
-			rc = -ENOTSYNC;
-	} else {
 		pm_runtime_put_autosuspend(rx_priv->dev);
 		pm_runtime_mark_last_busy(rx_priv->dev);
 	}
-	return rc;
+
+	if (bolero_check_core_votes(rx_priv->dev))
+		return 0;
+	else
+		return -EINVAL;
 }
 
 static int rx_swrm_clock(void *handle, bool enable)
@@ -4121,7 +4116,11 @@ static int rx_macro_probe(struct platform_device *pdev)
 	int ret = 0;
 	u8 bcl_pmic_params[3];
 	u32 default_clk_id = 0;
+#if defined ASUS_VODKA_PROJECT
+	u32 is_used_rx_swr_gpio = 0;
+#else
 	u32 is_used_rx_swr_gpio = 1;
+#endif
 	const char *is_used_rx_swr_gpio_dt = "qcom,is-used-swr-gpio";
 
 	if (!bolero_is_va_macro_registered(&pdev->dev)) {
@@ -4165,7 +4164,11 @@ static int rx_macro_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(&pdev->dev, "%s: error reading %s in dt\n",
 				__func__, is_used_rx_swr_gpio_dt);
+#if defined ASUS_VODKA_PROJECT
+			is_used_rx_swr_gpio = 0;
+#else
 			is_used_rx_swr_gpio = 1;
+#endif
 		}
 	}
 	rx_priv->rx_swr_gpio_p = of_parse_phandle(pdev->dev.of_node,
@@ -4238,12 +4241,12 @@ static int rx_macro_probe(struct platform_device *pdev)
 			"%s: register macro failed\n", __func__);
 		goto err_reg_macro;
 	}
+	schedule_work(&rx_priv->rx_macro_add_child_devices_work);
 	pm_runtime_set_autosuspend_delay(&pdev->dev, AUTO_SUSPEND_DELAY);
 	pm_runtime_use_autosuspend(&pdev->dev);
 	pm_runtime_set_suspended(&pdev->dev);
 	pm_suspend_ignore_children(&pdev->dev, true);
 	pm_runtime_enable(&pdev->dev);
-	schedule_work(&rx_priv->rx_macro_add_child_devices_work);
 
 	return 0;
 

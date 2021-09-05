@@ -31,15 +31,28 @@
 #include "asoc/msm-cdc-pinctrl.h"
 #include "asoc/wcd-mbhc-v2.h"
 #include "codecs/wcd938x/wcd938x-mbhc.h"
-#include "codecs/wcd937x/wcd937x-mbhc.h"
 #include "codecs/wsa883x/wsa883x.h"
 #include "codecs/wcd938x/wcd938x.h"
-#include "codecs/wcd937x/wcd937x.h"
 #include "codecs/bolero/bolero-cdc.h"
 #include <dt-bindings/sound/audio-codec-port-types.h>
 #include "codecs/bolero/wsa-macro.h"
 #include "lahaina-port-config.h"
 #include "msm_dailink.h"
+
+//ASUS_BSP +++   add for codec_status
+#ifdef ASUS_FTM_BUILD
+#if defined ASUS_VODKA_PROJECT || defined ASUS_SAKE_PROJECT
+#include <linux/proc_fs.h>
+#include <linux/syscalls.h>
+#include <linux/fs.h>
+#include <linux/file.h>
+#define AUDIO_CODEC_PROC_FILE  "driver/audio_codec"
+static struct proc_dir_entry *audio_codec_proc_file;
+int codec_status=0;
+int codec_num=0;
+#endif
+#endif
+//ASUS_BSP ---   add for codec_status
 
 #define DRV_NAME "lahaina-asoc-snd"
 #define __CHIPSET__ "LAHAINA "
@@ -72,7 +85,7 @@
 #define CODEC_EXT_CLK_RATE          9600000
 #define ADSP_STATE_READY_TIMEOUT_MS 3000
 #define DEV_NAME_STR_LEN            32
-#define WCD_MBHC_HS_V_MAX           1600
+#define WCD_MBHC_HS_V_MAX           1700
 
 #define TDM_CHANNEL_MAX		8
 
@@ -84,6 +97,10 @@
 #define WCN_CDC_SLIM_TX_CH_MAX 2
 #define WCN_CDC_SLIM_TX_CH_MAX_LITO 3
 
+#ifdef ASUS_ZS673KS_PROJECT
+/* ESS Definitions */
+static struct snd_soc_jack sdm845_sound_jack;
+#endif
 #define SWR_MAX_SLAVE_DEVICES 6
 
 enum {
@@ -319,6 +336,7 @@ static u32 mi2s_ebit_clk[MI2S_MAX] = {
 	Q6AFE_LPASS_CLK_ID_PRI_MI2S_EBIT,
 	Q6AFE_LPASS_CLK_ID_SEC_MI2S_EBIT,
 	Q6AFE_LPASS_CLK_ID_TER_MI2S_EBIT,
+	Q6AFE_LPASS_CLK_ID_QUAD_MI2S_EBIT,//Austin+++
 };
 
 static struct mi2s_conf mi2s_intf_conf[MI2S_MAX];
@@ -471,21 +489,25 @@ static struct dev_config aux_pcm_tx_cfg[] = {
 
 /* Default configuration of MI2S channels */
 static struct dev_config mi2s_rx_cfg[] = {
-	[PRIM_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
+	[PRIM_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S24_LE, 2}, /* Austin+++ *//* mei+++for vodka tfa9874 */
 	[SEC_MI2S]  = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
 	[TERT_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
 	[QUAT_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
 	[QUIN_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
-	[SEN_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 2},
+	[SEN_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S24_LE, 2}, /* ASUS_BSP Paul +++ */
 };
 
 static struct dev_config mi2s_tx_cfg[] = {
+#if defined ASUS_VODKA_PROJECT || defined ASUS_SAKE_PROJECT
+	[PRIM_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S24_LE, 2},/* mei+++for vodka tfa9874,sake cs35l45 amp echo reference */
+#else
 	[PRIM_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 1},
+#endif
 	[SEC_MI2S]  = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 1},
 	[TERT_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 1},
-	[QUAT_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 1},
+	[QUAT_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 1}, /* Austin +++ */
 	[QUIN_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 1},
-	[SEN_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S16_LE, 1},
+	[SEN_MI2S] = {SAMPLING_RATE_48KHZ, SNDRV_PCM_FORMAT_S24_LE, 2}, /* ASUS_BSP Paul +++ */
 };
 
 static struct tdm_dev_config pri_tdm_dev_config[MAX_PATH][TDM_PORT_MAX] = {
@@ -828,40 +850,6 @@ static SOC_ENUM_SINGLE_EXT_DECL(va_cdc_dma_tx_0_sample_rate,
 static SOC_ENUM_SINGLE_EXT_DECL(va_cdc_dma_tx_1_sample_rate,
 				cdc_dma_sample_rate_text);
 static SOC_ENUM_SINGLE_EXT_DECL(va_cdc_dma_tx_2_sample_rate,
-				cdc_dma_sample_rate_text);
-
-/* WCD9370 */
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc70_dma_rx_0_format, bit_format_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc70_dma_rx_1_format, bit_format_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc70_dma_rx_2_format, bit_format_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc70_dma_rx_3_format, bit_format_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc70_dma_rx_5_format, bit_format_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc70_dma_rx_0_sample_rate,
-				cdc80_dma_sample_rate_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc70_dma_rx_1_sample_rate,
-				cdc80_dma_sample_rate_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc70_dma_rx_2_sample_rate,
-				cdc80_dma_sample_rate_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc70_dma_rx_3_sample_rate,
-				cdc80_dma_sample_rate_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc70_dma_rx_5_sample_rate,
-				cdc80_dma_sample_rate_text);
-
-/* WCD9375 */
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc75_dma_rx_0_format, bit_format_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc75_dma_rx_1_format, bit_format_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc75_dma_rx_2_format, bit_format_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc75_dma_rx_3_format, bit_format_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc75_dma_rx_5_format, bit_format_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc75_dma_rx_0_sample_rate,
-				cdc_dma_sample_rate_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc75_dma_rx_1_sample_rate,
-				cdc_dma_sample_rate_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc75_dma_rx_2_sample_rate,
-				cdc_dma_sample_rate_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc75_dma_rx_3_sample_rate,
-				cdc_dma_sample_rate_text);
-static SOC_ENUM_SINGLE_EXT_DECL(rx_cdc75_dma_rx_5_sample_rate,
 				cdc_dma_sample_rate_text);
 
 /* WCD9380 */
@@ -3805,72 +3793,6 @@ static const struct snd_kcontrol_new msm_int_snd_controls[] = {
 			cdc_dma_tx_sample_rate_put),
 };
 
-static const struct snd_kcontrol_new msm_int_wcd9370_snd_controls[] = {
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_0 Format", rx_cdc70_dma_rx_0_format,
-			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_1 Format", rx_cdc70_dma_rx_1_format,
-			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_2 Format", rx_cdc70_dma_rx_2_format,
-			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_3 Format", rx_cdc70_dma_rx_3_format,
-			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_5 Format", rx_cdc70_dma_rx_5_format,
-			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_0 SampleRate",
-			rx_cdc70_dma_rx_0_sample_rate,
-			cdc_dma_rx_sample_rate_get,
-			cdc_dma_rx_sample_rate_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_1 SampleRate",
-			rx_cdc70_dma_rx_1_sample_rate,
-			cdc_dma_rx_sample_rate_get,
-			cdc_dma_rx_sample_rate_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_2 SampleRate",
-			rx_cdc70_dma_rx_2_sample_rate,
-			cdc_dma_rx_sample_rate_get,
-			cdc_dma_rx_sample_rate_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_3 SampleRate",
-			rx_cdc70_dma_rx_3_sample_rate,
-			cdc_dma_rx_sample_rate_get,
-			cdc_dma_rx_sample_rate_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_5 SampleRate",
-			rx_cdc70_dma_rx_5_sample_rate,
-			cdc_dma_rx_sample_rate_get,
-			cdc_dma_rx_sample_rate_put),
-};
-
-static const struct snd_kcontrol_new msm_int_wcd9375_snd_controls[] = {
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_0 Format", rx_cdc75_dma_rx_0_format,
-			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_1 Format", rx_cdc75_dma_rx_1_format,
-			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_2 Format", rx_cdc75_dma_rx_2_format,
-			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_3 Format", rx_cdc75_dma_rx_3_format,
-			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_5 Format", rx_cdc75_dma_rx_5_format,
-			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_0 SampleRate",
-			rx_cdc75_dma_rx_0_sample_rate,
-			cdc_dma_rx_sample_rate_get,
-			cdc_dma_rx_sample_rate_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_1 SampleRate",
-			rx_cdc75_dma_rx_1_sample_rate,
-			cdc_dma_rx_sample_rate_get,
-			cdc_dma_rx_sample_rate_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_2 SampleRate",
-			rx_cdc75_dma_rx_2_sample_rate,
-			cdc_dma_rx_sample_rate_get,
-			cdc_dma_rx_sample_rate_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_3 SampleRate",
-			rx_cdc75_dma_rx_3_sample_rate,
-			cdc_dma_rx_sample_rate_get,
-			cdc_dma_rx_sample_rate_put),
-	SOC_ENUM_EXT("RX_CDC_DMA_RX_5 SampleRate",
-			rx_cdc75_dma_rx_5_sample_rate,
-			cdc_dma_rx_sample_rate_get,
-			cdc_dma_rx_sample_rate_put),
-};
-
 static const struct snd_kcontrol_new msm_int_wcd9380_snd_controls[] = {
 	SOC_ENUM_EXT("RX_CDC_DMA_RX_0 Format", rx_cdc80_dma_rx_0_format,
 			cdc_dma_rx_format_get, cdc_dma_rx_format_put),
@@ -5036,7 +4958,6 @@ static void lahaina_tdm_snd_shutdown(struct snd_pcm_substream *substream)
 	}
 }
 
-#ifndef CONFIG_AUXPCM_DISABLE
 static int lahaina_aux_snd_startup(struct snd_pcm_substream *substream)
 {
 	int ret = 0;
@@ -5098,7 +5019,6 @@ static void lahaina_aux_snd_shutdown(struct snd_pcm_substream *substream)
 		}
 	}
 }
-#endif
 
 static int msm_snd_cdc_dma_startup(struct snd_pcm_substream *substream)
 {
@@ -5203,14 +5123,8 @@ static void set_cps_config(struct snd_soc_pcm_runtime *rtd,
 		/* bits 24:27 carry read length in bytes */
 		val |= 1 << 24;
 
-		/* bits 16:19 carry command id */
-		val |= (i*2) << 16;
-
 		/* Update dev num in packed reg addr */
 		pdata->cps_config.spkr_dep_cfg[i].vbatt_pkd_reg_addr |= val;
-
-		val &= 0xFF0FFFF;
-		val |= ((i*2)+1) << 16;
 		pdata->cps_config.spkr_dep_cfg[i].temp_pkd_reg_addr |= val;
 		i++;
 		ch_configured++;
@@ -5584,12 +5498,10 @@ err:
 	return ret;
 }
 
-#ifndef CONFIG_AUXPCM_DISABLE
 static struct snd_soc_ops lahaina_aux_be_ops = {
 	.startup = lahaina_aux_snd_startup,
 	.shutdown = lahaina_aux_snd_shutdown
 };
-#endif
 
 static struct snd_soc_ops lahaina_tdm_be_ops = {
 	.hw_params = lahaina_tdm_snd_hw_params,
@@ -5720,6 +5632,47 @@ static const struct snd_soc_dapm_widget msm_int_dapm_widgets[] = {
 	SND_SOC_DAPM_MIC("Digital Mic7", NULL),
 };
 
+#ifdef ASUS_ZS673KS_PROJECT
+// Austin +++
+extern void es928x_jdet_jack_det(struct snd_soc_component *component, struct snd_soc_jack *jack);
+
+static int msm_audrx_ess_init(struct snd_soc_pcm_runtime *rtd)
+{
+       int ret = 0;
+       struct snd_soc_dapm_context *dapm;
+       struct snd_soc_component *component = snd_soc_rtdcom_lookup(rtd, "es928x_codec");
+
+		if (!component) {
+			pr_err("%s: component is NULL\n", __func__);
+			return -EINVAL;
+		}
+		dapm = snd_soc_component_get_dapm(component);
+		
+       ret = snd_soc_card_jack_new(rtd->card, "ess Headset Jack",
+                                       SND_JACK_HEADSET | SND_JACK_LINEOUT |
+                                   SND_JACK_BTN_0 | SND_JACK_BTN_1 |
+                                   SND_JACK_BTN_2 | SND_JACK_BTN_3,
+                                       &sdm845_sound_jack, NULL, 0);
+
+       if (ret)
+       {
+               dev_err(rtd->card->dev, "New Headset Jack failed! (%d)\n", ret);
+               return ret;
+       }
+
+       snd_jack_set_key(sdm845_sound_jack.jack, SND_JACK_BTN_0, KEY_MEDIA);
+       snd_jack_set_key(sdm845_sound_jack.jack, SND_JACK_BTN_1, KEY_VOLUMEUP);
+       snd_jack_set_key(sdm845_sound_jack.jack, SND_JACK_BTN_2, KEY_VOLUMEDOWN);
+       snd_jack_set_key(sdm845_sound_jack.jack, SND_JACK_BTN_3, KEY_VOICECOMMAND);
+
+	es928x_jdet_jack_det(component, &sdm845_sound_jack);
+	pr_err("%s: end \n", __func__);
+	return 0;
+
+}
+//Austin --- 
+#endif
+
 static int msm_wcn_init(struct snd_soc_pcm_runtime *rtd)
 {
 	unsigned int rx_ch[WCN_CDC_SLIM_RX_CH_MAX] = {157, 158};
@@ -5775,10 +5728,10 @@ static void *def_wcd_mbhc_cal(void)
 		(sizeof(btn_cfg->_v_btn_low[0]) * btn_cfg->num_btn);
 
 	btn_high[0] = 75;
-	btn_high[1] = 150;
-	btn_high[2] = 237;
-	btn_high[3] = 500;
-	btn_high[4] = 500;
+	btn_high[1] = 125;
+	btn_high[2] = 225;
+	btn_high[3] = 438;
+	btn_high[4] = 438;
 	btn_high[5] = 500;
 	btn_high[6] = 500;
 	btn_high[7] = 500;
@@ -6228,6 +6181,22 @@ static struct snd_soc_dai_link msm_common_dai_links[] = {
 		.ignore_pmdown_time = 1,
 		SND_SOC_DAILINK_REG(tert_mi2s_tx_hostless),
 	},
+/* mei +++ for vodka tfa9874 */
+#if defined ASUS_VODKA_PROJECT
+	{		
+		.name = "Primary MI2S_TX Hostless",
+		.stream_name = "Primary MI2S_TX Hostless Capture",
+		.dynamic = 1,
+		.dpcm_capture = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+				SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		SND_SOC_DAILINK_REG(pri_mi2s_tx_hostless),
+	},
+#endif
+/* mei --- for vodka tfa9874 */
 };
 
 static struct snd_soc_dai_link msm_bolero_fe_dai_links[] = {
@@ -6741,6 +6710,9 @@ static struct snd_soc_dai_link msm_mi2s_be_dai_links[] = {
 	{
 		.name = LPASS_BE_PRI_MI2S_RX,
 		.stream_name = "Primary MI2S Playback",
+#ifdef ASUS_ZS673KS_PROJECT
+		.init = &msm_audrx_ess_init, //Austin+++
+#endif
 		.no_pcm = 1,
 		.dpcm_playback = 1,
 		.id = MSM_BACKEND_DAI_PRI_MI2S_RX,
@@ -6878,7 +6850,6 @@ static struct snd_soc_dai_link msm_mi2s_be_dai_links[] = {
 	},
 };
 
-#ifndef CONFIG_AUXPCM_DISABLE
 static struct snd_soc_dai_link msm_auxpcm_be_dai_links[] = {
 	/* Primary AUX PCM Backend DAI Links */
 	{
@@ -7021,7 +6992,6 @@ static struct snd_soc_dai_link msm_auxpcm_be_dai_links[] = {
 		SND_SOC_DAILINK_REG(sen_auxpcm_tx),
 	},
 };
-#endif
 
 static struct snd_soc_dai_link msm_wsa_cdc_dma_be_dai_links[] = {
 	/* WSA CDC DMA Backend DAI Links */
@@ -7248,9 +7218,7 @@ static struct snd_soc_dai_link msm_lahaina_dai_links[
 			ARRAY_SIZE(msm_common_misc_fe_dai_links) +
 			ARRAY_SIZE(msm_common_be_dai_links) +
 			ARRAY_SIZE(msm_mi2s_be_dai_links) +
-#ifndef CONFIG_AUXPCM_DISABLE
 			ARRAY_SIZE(msm_auxpcm_be_dai_links) +
-#endif
 			ARRAY_SIZE(msm_wsa_cdc_dma_be_dai_links) +
 			ARRAY_SIZE(msm_rx_tx_cdc_dma_be_dai_links) +
 			ARRAY_SIZE(msm_va_cdc_dma_be_dai_links) +
@@ -7509,7 +7477,6 @@ static int msm_snd_card_late_probe(struct snd_soc_card *card)
 	struct msm_asoc_mach_data *pdata;
 	int ret = 0;
 	void *mbhc_calibration;
-	bool is_wcd937x = false;
 
 	pdata = snd_soc_card_get_drvdata(card);
 	if (!pdata)
@@ -7528,23 +7495,15 @@ static int msm_snd_card_late_probe(struct snd_soc_card *card)
 
 	component = snd_soc_rtdcom_lookup(rtd, WCD938X_DRV_NAME);
 	if (!component) {
-		component = snd_soc_rtdcom_lookup(rtd, WCD937X_DRV_NAME);
-		if (!component) {
-			pr_err("%s component is NULL\n", __func__);
-			return -EINVAL;
-		} else {
-			is_wcd937x = true;
-		}
+		pr_err("%s component is NULL\n", __func__);
+		return -EINVAL;
 	}
 
 	mbhc_calibration = def_wcd_mbhc_cal();
 	if (!mbhc_calibration)
 		return -ENOMEM;
 	wcd_mbhc_cfg.calibration = mbhc_calibration;
-	if (!is_wcd937x)
-		ret = wcd938x_mbhc_hs_detect(component, &wcd_mbhc_cfg);
-	else
-		ret = wcd937x_mbhc_hs_detect(component, &wcd_mbhc_cfg);
+	ret = wcd938x_mbhc_hs_detect(component, &wcd_mbhc_cfg);
 	if (ret) {
 		dev_err(component->dev, "%s: mbhc hs detect failed, err:%d\n",
 			__func__, ret);
@@ -7557,6 +7516,118 @@ err_hs_detect:
 	return ret;
 }
 
+#ifdef ASUS_VODKA_PROJECT
+struct tfa98xx_dai_name {
+    const char *name;
+    const char *dai_name;
+};
+
+static struct tfa98xx_dai_name tfa98xx_dai_names[] = {
+       {
+               .name = "tfa98xx.3-0034",//for receiver AMP
+               .dai_name = "tfa98xx-aif-3-34",
+       },
+       {
+               .name = "tfa98xx.3-0035",//for speaker AMP
+               .dai_name = "tfa98xx-aif-3-35",
+       },
+};
+
+int register_receiver_dai_name(struct device *dev, int i2cbus, int addr){
+    char buf[50];
+    char *str;
+    snprintf(buf, 50, "tfa98xx.%x-00%x", i2cbus, addr);
+    str = devm_kzalloc(dev, strlen(buf) + 1, GFP_KERNEL);
+    if (!str)
+        return -EINVAL;
+    memcpy(str, buf, strlen(buf));
+    pr_info("%s: register TFA9874 receiver name =  %s\n", __func__, str);
+    tfa98xx_dai_names[0].name = str;
+
+    snprintf(buf, 50, "tfa98xx-aif-%x-%x", i2cbus, addr);
+    str = devm_kzalloc(dev, strlen(buf) + 1, GFP_KERNEL);
+    if (!str)
+        return -EINVAL;
+    memcpy(str, buf, strlen(buf));
+    pr_info("%s: register TFA9874 receiver dai_name =  %s\n", __func__, str);
+    tfa98xx_dai_names[0].dai_name = str;
+    return 0;
+}
+EXPORT_SYMBOL(register_receiver_dai_name);
+
+int register_speaker_dai_name(struct device *dev, int i2cbus, int addr){
+    char buf[50];
+    char *str;
+    snprintf(buf, 50, "tfa98xx.%x-00%x", i2cbus, addr);
+    str = devm_kzalloc(dev, strlen(buf) + 1, GFP_KERNEL);
+    if (!str)
+        return -EINVAL;
+    memcpy(str, buf, strlen(buf));
+    pr_info("%s: register TFA9874 speaker name =  %s\n", __func__, str);
+    tfa98xx_dai_names[1].name = str;
+
+    snprintf(buf, 50, "tfa98xx-aif-%x-%x", i2cbus, addr);
+    str = devm_kzalloc(dev, strlen(buf) + 1, GFP_KERNEL);
+    if (!str)
+        return -EINVAL;
+    memcpy(str, buf, strlen(buf));
+    pr_info("%s: register TFA9874 speaker dai_name =  %s\n", __func__, str);
+    tfa98xx_dai_names[1].dai_name = str;
+    return 0;
+}
+EXPORT_SYMBOL(register_speaker_dai_name);
+#endif
+
+#ifdef ASUS_SAKE_PROJECT
+struct cs35l45_dai_name {
+    const char *name;
+    const char *dai_name;
+};
+
+static struct cs35l45_dai_name cs35l45_dai_names[] = {
+       {
+               .name = "cs35l45.3-0030",//for receiver AMP
+               .dai_name = "cs35l45",
+       },
+       {
+               .name = "cs35l45.3-0031",//for speaker AMP
+               .dai_name = "cs35l45",
+       },
+};
+
+int register_receiver_dai_name(struct device *dev, int i2cbus, int addr){
+    char buf[50];
+    char *str;
+    snprintf(buf, 50, "cs35l45.%x-00%x", i2cbus, addr);
+    str = devm_kzalloc(dev, strlen(buf) + 1, GFP_KERNEL);
+    if (!str)
+        return -EINVAL;
+    memcpy(str, buf, strlen(buf));
+    pr_info("%s: register cs35l45 receiver name =  %s\n", __func__, str);
+    cs35l45_dai_names[0].name = str;
+    
+    cs35l45_dai_names[0].dai_name = "cs35l45";
+    return 0;
+}
+EXPORT_SYMBOL(register_receiver_dai_name);
+
+int register_speaker_dai_name(struct device *dev, int i2cbus, int addr){
+    char buf[50];
+    char *str;
+    snprintf(buf, 50, "cs35l45.%x-00%x", i2cbus, addr);
+    str = devm_kzalloc(dev, strlen(buf) + 1, GFP_KERNEL);
+    if (!str)
+        return -EINVAL;
+    memcpy(str, buf, strlen(buf));
+    pr_info("%s: register cs35l45 speaker name =  %s\n", __func__, str);
+    cs35l45_dai_names[1].name = str;
+
+    cs35l45_dai_names[1].dai_name = "cs35l45";
+    return 0;
+}
+EXPORT_SYMBOL(register_speaker_dai_name);
+#endif
+
 static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 {
 	struct snd_soc_card *card = NULL;
@@ -7566,6 +7637,7 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 	int total_links = 0;
 	int rc = 0;
 	u32 mi2s_audio_intf = 0;
+	u32 auxpcm_audio_intf = 0;
 	u32 val = 0;
 	u32 wcn_btfm_intf = 0;
 	const struct of_device_id *match;
@@ -7643,6 +7715,33 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 				__func__);
 		} else {
 			if (mi2s_audio_intf) {
+#ifdef ASUS_VODKA_PROJECT
+				//for pri_mi2s_rx
+				msm_mi2s_be_dai_links[0].codecs[0].name = tfa98xx_dai_names[0].name;
+				msm_mi2s_be_dai_links[0].codecs[0].dai_name = tfa98xx_dai_names[0].dai_name;
+				msm_mi2s_be_dai_links[0].codecs[1].name = tfa98xx_dai_names[1].name;
+				msm_mi2s_be_dai_links[0].codecs[1].dai_name = tfa98xx_dai_names[1].dai_name;
+				
+				//for pri_mi2s_tx
+				msm_mi2s_be_dai_links[1].codecs[0].name = tfa98xx_dai_names[0].name;
+				msm_mi2s_be_dai_links[1].codecs[0].dai_name = tfa98xx_dai_names[0].dai_name;
+				msm_mi2s_be_dai_links[1].codecs[1].name = tfa98xx_dai_names[1].name;
+				msm_mi2s_be_dai_links[1].codecs[1].dai_name = tfa98xx_dai_names[1].dai_name;
+#endif
+
+#ifdef ASUS_SAKE_PROJECT
+				//for pri_mi2s_rx
+				msm_mi2s_be_dai_links[0].codecs[0].name = cs35l45_dai_names[0].name;
+				msm_mi2s_be_dai_links[0].codecs[0].dai_name = cs35l45_dai_names[0].dai_name;
+				msm_mi2s_be_dai_links[0].codecs[1].name = cs35l45_dai_names[1].name;
+				msm_mi2s_be_dai_links[0].codecs[1].dai_name = cs35l45_dai_names[1].dai_name;
+				
+				//for pri_mi2s_tx
+				msm_mi2s_be_dai_links[1].codecs[0].name = cs35l45_dai_names[0].name;
+				msm_mi2s_be_dai_links[1].codecs[0].dai_name = cs35l45_dai_names[0].dai_name;
+				msm_mi2s_be_dai_links[1].codecs[1].name = cs35l45_dai_names[1].name;
+				msm_mi2s_be_dai_links[1].codecs[1].dai_name = cs35l45_dai_names[1].dai_name;
+#endif
 				memcpy(msm_lahaina_dai_links + total_links,
 					msm_mi2s_be_dai_links,
 					sizeof(msm_mi2s_be_dai_links));
@@ -7650,15 +7749,15 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 					ARRAY_SIZE(msm_mi2s_be_dai_links);
 			}
 		}
-#ifndef CONFIG_AUXPCM_DISABLE
+
 		rc = of_property_read_u32(dev->of_node,
 					  "qcom,auxpcm-audio-intf",
-					  &val);
+					  &auxpcm_audio_intf);
 		if (rc) {
 			dev_dbg(dev, "%s: No DT match Aux PCM interface\n",
 				__func__);
 		} else {
-			if (val) {
+			if (auxpcm_audio_intf) {
 				memcpy(msm_lahaina_dai_links + total_links,
 					msm_auxpcm_be_dai_links,
 					sizeof(msm_auxpcm_be_dai_links));
@@ -7666,7 +7765,6 @@ static struct snd_soc_card *populate_snd_card_dailinks(struct device *dev)
 					ARRAY_SIZE(msm_auxpcm_be_dai_links);
 			}
 		}
-#endif
 
 #if IS_ENABLED(CONFIG_AUDIO_QGKI)
 		rc = of_property_read_u32(dev->of_node,
@@ -7801,7 +7899,6 @@ static int msm_int_wsa_init(struct snd_soc_pcm_runtime *rtd)
 static int msm_rx_tx_codec_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_component *component = NULL;
-	struct snd_soc_component *bolero_component = NULL;
 	struct snd_soc_dapm_context *dapm = NULL;
 	int ret = 0;
 	int codec_variant = -1;
@@ -7818,8 +7915,6 @@ static int msm_rx_tx_codec_init(struct snd_soc_pcm_runtime *rtd)
 		pr_err("%s: could not find component for bolero_codec\n",
 			__func__);
 		return ret;
-	} else {
-		bolero_component = component;
 	}
 
 	dapm = snd_soc_component_get_dapm(component);
@@ -7866,6 +7961,13 @@ static int msm_rx_tx_codec_init(struct snd_soc_pcm_runtime *rtd)
 
 	card = rtd->card->snd_card;
 
+	if (strnstr(rtd->card->name, "shima", strlen(rtd->card->name)) != NULL)
+		bolero_set_port_map(component, ARRAY_SIZE(sm_port_map_shima),
+				sm_port_map_shima);
+	else
+		bolero_set_port_map(component, ARRAY_SIZE(sm_port_map),
+				sm_port_map);
+
 	if (!pdata->codec_root) {
 		entry = msm_snd_info_create_subdir(card->module, "codecs",
 						 card->proc_root);
@@ -7885,11 +7987,8 @@ static int msm_rx_tx_codec_init(struct snd_soc_pcm_runtime *rtd)
 	}
 	component = snd_soc_rtdcom_lookup(rtd, WCD938X_DRV_NAME);
 	if (!component) {
-		component = snd_soc_rtdcom_lookup(rtd, WCD937X_DRV_NAME);
-		if (!component) {
-			pr_err("%s component is NULL\n", __func__);
-			return -EINVAL;
-		}
+		pr_err("%s component is NULL\n", __func__);
+		return -EINVAL;
 	}
 	dapm = snd_soc_component_get_dapm(component);
 	card = component->card->snd_card;
@@ -7904,51 +8003,18 @@ static int msm_rx_tx_codec_init(struct snd_soc_pcm_runtime *rtd)
 	snd_soc_dapm_ignore_suspend(dapm, "AMIC4");
 	snd_soc_dapm_sync(dapm);
 
-	if (!strncmp(component->driver->name, WCD937X_DRV_NAME,
-	    strlen(WCD937X_DRV_NAME))) {
-		wcd937x_info_create_codec_entry(pdata->codec_root, component);
-		codec_variant = wcd937x_get_codec_variant(component);
-		dev_dbg(component->dev, "%s: variant %d\n",
-			 __func__, codec_variant);
-		if (codec_variant == WCD9370_VARIANT)
-			ret = snd_soc_add_component_controls(component,
-				msm_int_wcd9370_snd_controls,
-				ARRAY_SIZE(msm_int_wcd9370_snd_controls));
-		else if (codec_variant == WCD9375_VARIANT)
-			ret = snd_soc_add_component_controls(component,
-				msm_int_wcd9375_snd_controls,
-				ARRAY_SIZE(msm_int_wcd9375_snd_controls));
-		bolero_set_port_map(bolero_component,
-			ARRAY_SIZE(sm_port_map_wcd937x), sm_port_map_wcd937x);
-	} else if (!strncmp(component->driver->name, WCD938X_DRV_NAME,
-		   strlen(WCD938X_DRV_NAME))) {
-		wcd938x_info_create_codec_entry(pdata->codec_root, component);
+	wcd938x_info_create_codec_entry(pdata->codec_root, component);
 
-		codec_variant = wcd938x_get_codec_variant(component);
-		dev_dbg(component->dev, "%s: variant %d\n",
-			 __func__, codec_variant);
-		if (codec_variant == WCD9380)
-			ret = snd_soc_add_component_controls(component,
-				msm_int_wcd9380_snd_controls,
-				ARRAY_SIZE(msm_int_wcd9380_snd_controls));
-		else if (codec_variant == WCD9385)
-			ret = snd_soc_add_component_controls(component,
-				msm_int_wcd9385_snd_controls,
-				ARRAY_SIZE(msm_int_wcd9385_snd_controls));
-
-		if ((strnstr(rtd->card->name, "shima", strlen(rtd->card->name))
-		    != NULL) || (strnstr(rtd->card->name, "yupik",
-		    strlen(rtd->card->name)) != NULL))
-			bolero_set_port_map(bolero_component,
-				ARRAY_SIZE(sm_port_map_shima),
-				sm_port_map_shima);
-		else
-			bolero_set_port_map(bolero_component,
-				ARRAY_SIZE(sm_port_map), sm_port_map);
-	} else {
-		bolero_set_port_map(bolero_component, ARRAY_SIZE(sm_port_map),
-				 sm_port_map);
-	}
+	codec_variant = wcd938x_get_codec_variant(component);
+	dev_dbg(component->dev, "%s: variant %d\n", __func__, codec_variant);
+	if (codec_variant == WCD9380)
+		ret = snd_soc_add_component_controls(component,
+					msm_int_wcd9380_snd_controls,
+					ARRAY_SIZE(msm_int_wcd9380_snd_controls));
+	else if (codec_variant == WCD9385)
+		ret = snd_soc_add_component_controls(component,
+					msm_int_wcd9385_snd_controls,
+					ARRAY_SIZE(msm_int_wcd9385_snd_controls));
 
 	if (ret < 0) {
 		dev_err(component->dev, "%s: add codec specific snd controls failed: %d\n",
@@ -8192,6 +8258,44 @@ static void parse_cps_configuration(struct platform_device *pdev,
 	}
 }
 
+//ASUS_BSP +++   add for codec_status
+#ifdef ASUS_FTM_BUILD
+#if defined ASUS_VODKA_PROJECT || defined ASUS_SAKE_PROJECT
+static ssize_t audio_codec_proc_read(struct file *filp, char __user *buff, size_t len, loff_t *off)
+{
+       char messages[256];
+       pr_err("[Audio] audio_codec_proc_read, codec_status is %d\n", codec_status);
+       if(*off)
+               return 0;
+       memset(messages, 0, sizeof(messages));
+       if (len > 256)
+               len = 256;
+
+       sprintf(messages, "%d\n", codec_status);
+    if (copy_to_user(buff, messages, sizeof(messages)))
+               return -EFAULT;
+       (*off)++;
+       return len;
+}
+
+static struct file_operations proc_fops=
+{
+    .read=audio_codec_proc_read,
+    .owner=THIS_MODULE,
+};
+
+static void create_audio_codec_proc_file(void)
+{
+    pr_err("[Audio] create_audio_codec_proc_file\n");
+    audio_codec_proc_file = proc_create(AUDIO_CODEC_PROC_FILE, 0444, NULL, &proc_fops);
+    if (!audio_codec_proc_file){
+        pr_err("[Audio] create_audio_codec_proc_file failed!\n");
+    }
+}
+#endif
+#endif
+//ASUS_BSP ---   add for codec_status
+
 static int msm_asoc_machine_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = NULL;
@@ -8236,6 +8340,17 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 			__func__, ret);
 		goto err;
 	}
+
+//ASUS_BSP +++   add for codec_status
+#ifdef ASUS_FTM_BUILD
+#if defined ASUS_VODKA_PROJECT || defined ASUS_SAKE_PROJECT
+    if(!codec_num){
+        codec_num++;
+        create_audio_codec_proc_file();
+    }
+#endif
+#endif
+//ASUS_BSP ---   add for codec_status
 
 	ret = snd_soc_of_parse_audio_routing(card, "qcom,audio-routing");
 	if (ret) {
@@ -8406,9 +8521,26 @@ static int msm_asoc_machine_probe(struct platform_device *pdev)
 	/* Add QoS request for audio tasks */
 	msm_audio_add_qos_request();
 
+//ASUS_BSP +++   add for codec_status
+#ifdef ASUS_FTM_BUILD
+#if defined ASUS_VODKA_PROJECT || defined ASUS_SAKE_PROJECT
+	if(!codec_status){
+		codec_status=1;
+	}
+#endif
+#endif
+//ASUS_BSP +++   add for codec_status
+
 	return 0;
 err:
 	devm_kfree(&pdev->dev, pdata);
+//ASUS_BSP +++  add for codec_status
+#ifdef ASUS_FTM_BUILD
+#if defined ASUS_VODKA_PROJECT || defined ASUS_SAKE_PROJECT
+    codec_status=0;
+#endif
+#endif
+//ASUS_BSP ---   add for codec_status
 	return ret;
 }
 
