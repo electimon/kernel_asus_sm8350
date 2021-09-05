@@ -185,6 +185,8 @@ camera-$(CONFIG_SPECTRA_SENSOR) += \
 	cam_sensor_module/cam_sensor_utils/cam_sensor_util.o \
 	cam_sensor_module/cam_res_mgr/cam_res_mgr.o
 
+CFLAGS_REMOVE_onsemi_interface.o = -mgeneral-regs-only
+
 ifeq ($(CONFIG_MACH_ASUS_ZS673KS),y)
 camera-$(CONFIG_SPECTRA_SENSOR) += \
   cam_sensor_module/cam_ois/utils.o \
