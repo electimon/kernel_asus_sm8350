@@ -17,6 +17,28 @@
 #include "sde_dsc_helper.h"
 #include "sde_vdc_helper.h"
 
+//Bottom USB RT1715 +++
+#if defined ASUS_ZS673KS_PROJECT
+extern void rt_send_screen_suspend(void);
+#endif
+//Bottom USB RT1715 ---
+
+/* ASUS BSP Display +++ */
+#include "dsi_anakin.h"
+#include "dsi_zf8.h"
+
+#if defined(CONFIG_PXLW_IRIS)
+#include "iris/dsi_iris6_api.h"
+#endif
+
+#if defined ASUS_SAKE_PROJECT
+extern int g_lcd_stage_id;
+#endif
+
+#if defined ASUS_SAKE_PROJECT || defined ASUS_VODKA_PROJECT
+extern bool fps_change;
+#endif
+
 /**
  * topology is currently defined by a set of following 3 values:
  * 1. num of layer mixers
@@ -154,7 +176,24 @@ static int dsi_panel_gpio_request(struct dsi_panel *panel)
 		}
 	}
 
+	/* ASUS BSP Display +++ */
+	if (gpio_is_valid(r_config->px_reset_gpio)) {
+		rc = gpio_request(r_config->px_reset_gpio, "px_reset_gpio");
+		if (rc) {
+			DSI_LOG("request for px_reset_gpio failed, rc=%d\n", rc);
+			goto error_release_px_reset;
+		}
+	}
+	/* ASUS BSP Display --- */
+#if defined(CONFIG_PXLW_IRIS)
+	iris_request_gpio();
+#endif
 	goto error;
+/* ASUS BSP Display +++ */
+error_release_px_reset:
+	if (gpio_is_valid(r_config->px_reset_gpio))
+		gpio_free(r_config->px_reset_gpio);
+/* ASUS BSP Display --- */
 error_release_mode_sel:
 	if (gpio_is_valid(panel->bl_config.en_gpio))
 		gpio_free(panel->bl_config.en_gpio);
@@ -188,55 +227,37 @@ static int dsi_panel_gpio_release(struct dsi_panel *panel)
 	if (gpio_is_valid(panel->panel_test_gpio))
 		gpio_free(panel->panel_test_gpio);
 
+	/* ASUS BSP Display +++ */
+	if (gpio_is_valid(r_config->px_reset_gpio))
+		gpio_free(r_config->px_reset_gpio);
+	/* ASUS BSP Display --- */
+
 	return rc;
 }
 
-int dsi_panel_trigger_esd_attack(struct dsi_panel *panel, bool trusted_vm_env)
+int dsi_panel_trigger_esd_attack(struct dsi_panel *panel)
 {
+	struct dsi_panel_reset_config *r_config;
+
 	if (!panel) {
 		DSI_ERR("Invalid panel param\n");
 		return -EINVAL;
 	}
 
-	/* toggle reset-gpio by writing directly to register in trusted-vm */
-	if (trusted_vm_env) {
-		struct dsi_tlmm_gpio *gpio = NULL;
-		void __iomem *io;
-		u32 offset = 0x4;
-		int i;
-
-		for (i = 0; i < panel->tlmm_gpio_count; i++)
-			if (!strcmp(panel->tlmm_gpio[i].name, "reset-gpio"))
-				gpio = &panel->tlmm_gpio[i];
-
-		if (!gpio) {
-			DSI_ERR("reset gpio not found\n");
-			return -EINVAL;
-		}
-
-		io = ioremap(gpio->addr, gpio->size);
-		writel_relaxed(0, io + offset);
-		iounmap(io);
-
-	} else {
-		struct dsi_panel_reset_config *r_config = &panel->reset_config;
-
-		if (!r_config) {
-			DSI_ERR("Invalid panel reset configuration\n");
-			return -EINVAL;
-		}
-
-		if (!gpio_is_valid(r_config->reset_gpio)) {
-			DSI_ERR("failed to pull down gpio\n");
-			return -EINVAL;
-		}
-		gpio_set_value(r_config->reset_gpio, 0);
+	r_config = &panel->reset_config;
+	if (!r_config) {
+		DSI_ERR("Invalid panel reset configuration\n");
+		return -EINVAL;
 	}
 
-	SDE_EVT32(SDE_EVTLOG_FUNC_CASE1);
-	DSI_INFO("GPIO pulled low to simulate ESD\n");
-
-	return 0;
+	if (gpio_is_valid(r_config->reset_gpio)) {
+		gpio_set_value(r_config->reset_gpio, 0);
+		SDE_EVT32(SDE_EVTLOG_FUNC_CASE1);
+		DSI_INFO("GPIO pulled low to simulate ESD\n");
+		return 0;
+	}
+	DSI_ERR("failed to pull down gpio\n");
+	return -EINVAL;
 }
 
 static int dsi_panel_reset(struct dsi_panel *panel)
@@ -251,8 +272,23 @@ static int dsi_panel_reset(struct dsi_panel *panel)
 			DSI_ERR("unable to set dir for disp gpio rc=%d\n", rc);
 			goto exit;
 		}
+		/* ASUS BSP Display +++ */
+		msleep(10);
 	}
 
+	/* ASUS BSP Display +++ */
+	if (gpio_is_valid(panel->reset_config.px_reset_gpio)) {
+		rc = gpio_direction_output(panel->reset_config.px_reset_gpio, 1);
+		if (rc) {
+			DSI_LOG("unable to set dir for px-reset gpio rc=%d\n", rc);
+			goto exit;
+		}
+		msleep(1);
+	}
+	/* ASUS BSP Display --- */
+#if defined(CONFIG_PXLW_IRIS)
+	//iris_reset();
+#endif
 	if (r_config->count) {
 		rc = gpio_direction_output(r_config->reset_gpio,
 			r_config->sequence[0].level);
@@ -337,6 +373,9 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 {
 	int rc = 0;
 
+	/*ASUS BSP Display +++ */
+	DSI_LOG("panel on +++\n");
+
 	rc = dsi_pwr_enable_regulator(&panel->power_info, true);
 	if (rc) {
 		DSI_ERR("[%s] failed to enable vregs, rc=%d\n",
@@ -344,6 +383,8 @@ static int dsi_panel_power_on(struct dsi_panel *panel)
 		goto exit;
 	}
 
+	dsi_zf8_sake_power_on_delay();
+	
 	rc = dsi_panel_set_pinctrl_state(panel, true);
 	if (rc) {
 		DSI_ERR("[%s] failed to set pinctrl, rc=%d\n", panel->name, rc);
@@ -371,6 +412,8 @@ error_disable_vregs:
 	(void)dsi_pwr_enable_regulator(&panel->power_info, false);
 
 exit:
+	/*ASUS BSP Display +++ */
+	DSI_LOG("panel on ---\n");
 	return rc;
 }
 
@@ -378,12 +421,23 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 {
 	int rc = 0;
 
-	if (gpio_is_valid(panel->reset_config.disp_en_gpio))
-		gpio_set_value(panel->reset_config.disp_en_gpio, 0);
+	/*ASUS BSP Display +++ */
+	DSI_LOG("panel off +++\n");
 
 	if (gpio_is_valid(panel->reset_config.reset_gpio) &&
 					!panel->reset_gpio_always_on)
 		gpio_set_value(panel->reset_config.reset_gpio, 0);
+
+	msleep(5);
+	
+	if (gpio_is_valid(panel->reset_config.disp_en_gpio))
+		gpio_set_value(panel->reset_config.disp_en_gpio, 0);
+
+
+
+#if defined(CONFIG_PXLW_IRIS)
+	//iris_reset_off();
+#endif
 
 	if (gpio_is_valid(panel->reset_config.lcd_mode_sel_gpio))
 		gpio_set_value(panel->reset_config.lcd_mode_sel_gpio, 0);
@@ -395,17 +449,30 @@ static int dsi_panel_power_off(struct dsi_panel *panel)
 				 rc);
 	}
 
+	/* ASUS BSP Display +++ */
+	if (gpio_is_valid(panel->reset_config.px_reset_gpio))
+		gpio_direction_output(panel->reset_config.px_reset_gpio, 0);
+	/* ASUS BSP Display --- */
+
 	rc = dsi_panel_set_pinctrl_state(panel, false);
 	if (rc) {
 		DSI_ERR("[%s] failed set pinctrl state, rc=%d\n", panel->name,
 		       rc);
 	}
 
+//Bottom USB RT1715 +++
+#if defined ASUS_ZS673KS_PROJECT
+	rt_send_screen_suspend();
+#endif
+//Bottom USB RT1715 ---
+
 	rc = dsi_pwr_enable_regulator(&panel->power_info, false);
 	if (rc)
 		DSI_ERR("[%s] failed to enable vregs, rc=%d\n",
 				panel->name, rc);
 
+	/*ASUS BSP Display +++ */
+	DSI_LOG("panel off ---\n");
 	return rc;
 }
 static int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
@@ -434,6 +501,15 @@ static int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
 			 panel->name, type);
 		goto error;
 	}
+
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_mp_panel()) {
+		if (iris_get_abyp_mode_blocking() == IRIS_PT_MODE) {
+			rc = iris_pt_send_panel_cmd(panel, &(mode->priv_info->cmd_sets[type]));
+			return rc;
+		}
+	}
+#endif
 
 	for (i = 0; i < count; i++) {
 		if (state == DSI_CMD_SET_STATE_LP)
@@ -550,10 +626,37 @@ static int dsi_panel_update_backlight(struct dsi_panel *panel,
 		dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 	}
 
+#if defined ASUS_SAKE_PROJECT || defined ASUS_VODKA_PROJECT
+  	if( fps_change) {
+		fps_change = false;
+		return rc;
+  	}
+#endif
+
+	/* ASUS BSP Display +++ */
+	DSI_LOG("set bl=%d\n", bl_lvl);
+	dsi_anakin_record_backlight(bl_lvl);
+	dsi_zf8_record_backlight(bl_lvl);
+	dsi_zf8_set_dimming_smooth(panel, bl_lvl);
+
+	// always 0 except project Anakin & Picasso
+	if (panel->allow_panel_fod_hbm == 1)
+		return rc;
+	bl_lvl = dsi_anakin_backlightupdate(bl_lvl);
+	/* ASUS BSP Display --- */
+
 	if (panel->bl_config.bl_inverted_dbv)
 		bl_lvl = (((bl_lvl & 0xff) << 8) | (bl_lvl >> 8));
-
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_mp_panel()) {
+		if (!iris_dc_on_off_pending())
+			rc = iris_update_backlight(bl_lvl);
+	} else {
+		rc = mipi_dsi_dcs_set_display_brightness(dsi, bl_lvl);
+	}
+#else
 	rc = mipi_dsi_dcs_set_display_brightness(dsi, bl_lvl);
+#endif
 	if (rc < 0)
 		DSI_ERR("failed to update dcs backlight:%d\n", bl_lvl);
 
@@ -887,6 +990,7 @@ static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 		       rc);
 		goto error;
 	}
+
 	DSI_DEBUG("panel vert active:%d front_portch:%d back_porch:%d pulse_width:%d\n",
 		mode->v_active, mode->v_front_porch, mode->v_back_porch,
 		mode->v_sync_width);
@@ -1725,6 +1829,28 @@ const char *cmd_set_prop_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command",
 	"qcom,mdss-dsi-qsync-on-commands",
 	"qcom,mdss-dsi-qsync-off-commands",
+	/* ASUS BSP Display, refer to panel dtsi +++ */
+	"qcom,mdss-dsi-ER1-on-command",
+	"qcom,mdss-dsi-hbm-on-command",
+	"qcom,mdss-dsi-hbm-ER2-on-command",
+	"qcom,mdss-dsi-ER1-cam-hbm-on-command",
+	"qcom,mdss-dsi-ER2-cam-hbm-on-command",
+	"qcom,mdss-dsi-hbm-off-command",
+	"qcom,mdss-dsi-fod-hbm-on-command",
+	"qcom,mdss-dsi-fod-ER2-hbm-on-command",
+	"qcom,mdss-dsi-fod-hbm-off-command",
+	"qcom,mdss-dsi-nolp-ER2-command",
+	"qcom,mdss-dsi-nolp-ER2-FOD-command",
+	"qcom,mdss-dsi-aod-low-command",
+	"qcom,mdss-dsi-aod-high-command",
+	"qcom,mdss-dsi-aod-ER2-high-command",
+	"qcom,mdss-dsi-aod-ER2-low-command",
+	"qcom,mdss-dsi-aod-other-command",
+	"qcom,mdss-dsi-dimming-speed-1frame-command",
+	"qcom,mdss-dsi-dimming-speed-20frame-command",
+	"qcom,mdss-dsi-dimming-smooth-command",
+	"qcom,mdss-dsi-aod-off-command",
+	/* ASUS BSP Display, refer to panel dtsi --- */
 };
 
 const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
@@ -1751,6 +1877,28 @@ const char *cmd_set_state_map[DSI_CMD_SET_MAX] = {
 	"qcom,mdss-dsi-post-mode-switch-on-command-state",
 	"qcom,mdss-dsi-qsync-on-commands-state",
 	"qcom,mdss-dsi-qsync-off-commands-state",
+	/* ASUS BSP Display, refer to panel dtsi +++ */
+	"qcom,mdss-dsi-ER1-on-command-state",
+	"qcom,mdss-dsi-hbm-on-command-state",
+	"qcom,mdss-dsi-hbm-ER2-on-command-state",
+	"qcom,mdss-dsi-ER1-cam-hbm-on-command-state",
+	"qcom,mdss-dsi-ER2-cam-hbm-on-command-state",
+	"qcom,mdss-dsi-hbm-off-command-state",
+	"qcom,mdss-dsi-fod-hbm-on-command-state",
+	"qcom,mdss-dsi-fod-ER2-hbm-on-command-state",
+	"qcom,mdss-dsi-fod-hbm-off-command-state",
+	"qcom,mdss-dsi-nolp-ER2-command-state",
+	"qcom,mdss-dsi-nolp-ER2-FOD-command-state",
+	"qcom,mdss-dsi-aod-low-command-state",
+	"qcom,mdss-dsi-aod-high-command-state",
+	"qcom,mdss-dsi-aod-ER2-high-command-state",
+	"qcom,mdss-dsi-aod-ER2-low-command-state",
+	"qcom,mdss-dsi-aod-other-command-state",
+	"qcom,mdss-dsi-dimming-speed-1frame-command-state",
+	"qcom,mdss-dsi-dimming-speed-20frame-command-state",
+	"qcom,mdss-dsi-dimming-smooth-command-state",
+	"qcom,mdss-dsi-aod-off-command-state",
+	/* ASUS BSP Display, refer to panel dtsi --- */
 };
 
 int dsi_panel_get_cmd_pkt_count(const char *data, u32 length, u32 *cnt)
@@ -2153,19 +2301,63 @@ int dsi_panel_get_io_resources(struct dsi_panel *panel,
 	struct list_head temp_head;
 	struct msm_io_mem_entry *io_mem, *pos, *tmp;
 	struct list_head *mem_list = &io_res->mem;
-	int i, rc = 0;
+	int i, rc = 0, address_count, pin_count;
+	u32 *pins = NULL, *address = NULL;
+	u32 base, size;
+	struct dsi_parser_utils *utils = &panel->utils;
 
 	INIT_LIST_HEAD(&temp_head);
 
-	for (i = 0; i < panel->tlmm_gpio_count; i++) {
+	address_count = utils->count_u32_elems(utils->data,
+				"qcom,dsi-panel-gpio-address");
+	if (address_count != 2) {
+		DSI_DEBUG("panel gpio address not defined\n");
+		return 0;
+	}
+
+	address =  kzalloc(sizeof(u32) * address_count, GFP_KERNEL);
+	if (!address)
+		return -ENOMEM;
+
+	rc = utils->read_u32_array(utils->data, "qcom,dsi-panel-gpio-address",
+				address, address_count);
+	if (rc) {
+		DSI_ERR("panel gpio address not defined correctly\n");
+		goto end;
+	}
+	base = address[0];
+	size = address[1];
+
+	pin_count = utils->count_u32_elems(utils->data,
+				"qcom,dsi-panel-gpio-pins");
+	if (pin_count < 0) {
+		DSI_ERR("panel gpio pins not defined\n");
+		rc = pin_count;
+		goto end;
+	}
+
+	pins =  kzalloc(sizeof(u32) * pin_count, GFP_KERNEL);
+	if (!pins) {
+		rc = -ENOMEM;
+		goto end;
+	}
+
+	rc = utils->read_u32_array(utils->data, "qcom,dsi-panel-gpio-pins",
+				pins, pin_count);
+	if (rc) {
+		DSI_ERR("panel gpio pins not defined correctly\n");
+		goto end;
+	}
+
+	for (i = 0; i < pin_count; i++) {
 		io_mem = kzalloc(sizeof(*io_mem), GFP_KERNEL);
 		if (!io_mem) {
 			rc = -ENOMEM;
 			goto parse_fail;
 		}
 
-		io_mem->base = panel->tlmm_gpio[i].addr;
-		io_mem->size = panel->tlmm_gpio[i].size;
+		io_mem->base = base + (pins[i] * size);
+		io_mem->size = size;
 
 		list_add(&io_mem->list, &temp_head);
 	}
@@ -2179,6 +2371,8 @@ parse_fail:
 		kzfree(pos);
 	}
 end:
+	kzfree(pins);
+	kzfree(address);
 	return rc;
 }
 
@@ -2263,56 +2457,16 @@ static int dsi_panel_parse_gpios(struct dsi_panel *panel)
 		DSI_DEBUG("%s:%d panel test gpio not specified\n", __func__,
 			 __LINE__);
 
+	/* ASUS BSP Display +++ */
+	panel->reset_config.px_reset_gpio = utils->get_named_gpio(utils->data,
+					"qcom,platform-px-reset-gpio",
+					0);
+	if (!gpio_is_valid(panel->reset_config.px_reset_gpio))
+		DSI_ERR("[%s] platform-px-reset-gpio is not set, rc=%d\n",
+			 panel->name, rc);
+	/* ASUS BSP Display --- */
 error:
 	return rc;
-}
-
-static int dsi_panel_parse_tlmm_gpio(struct dsi_panel *panel)
-{
-	struct dsi_parser_utils *utils = &panel->utils;
-	u32 base, size, pin;
-	int pin_count, address_count, name_count, i;
-
-	address_count = of_property_count_u32_elems(utils->data,
-				"qcom,dsi-panel-gpio-address");
-	if (address_count != 2) {
-		DSI_DEBUG("panel gpio address not defined\n");
-		return 0;
-	}
-
-	of_property_read_u32_index(utils->data,
-			"qcom,dsi-panel-gpio-address", 0, &base);
-	of_property_read_u32_index(utils->data,
-			"qcom,dsi-panel-gpio-address", 1, &size);
-
-	pin_count = of_property_count_u32_elems(utils->data,
-				"qcom,dsi-panel-gpio-pins");
-	name_count = of_property_count_strings(utils->data,
-				"qcom,dsi-panel-gpio-names");
-	if ((pin_count < 0) || (name_count < 0) || (pin_count != name_count)) {
-		DSI_ERR("invalid gpio pins/names\n");
-		return -EINVAL;
-	}
-
-	panel->tlmm_gpio = kcalloc(pin_count,
-				sizeof(struct dsi_tlmm_gpio), GFP_KERNEL);
-	if (!panel->tlmm_gpio)
-		return -ENOMEM;
-
-	panel->tlmm_gpio_count = pin_count;
-	for (i = 0; i < pin_count; i++) {
-		of_property_read_u32_index(utils->data,
-				"qcom,dsi-panel-gpio-pins", i, &pin);
-		panel->tlmm_gpio[i].num = pin;
-		panel->tlmm_gpio[i].addr = base + (pin * size);
-		panel->tlmm_gpio[i].size = size;
-
-		of_property_read_string_index(utils->data,
-				"qcom,dsi-panel-gpio-names", i,
-				&(panel->tlmm_gpio[i].name));
-	}
-
-	return 0;
 }
 
 static int dsi_panel_parse_bl_pwm_config(struct dsi_panel *panel)
@@ -3424,7 +3578,6 @@ static void dsi_panel_setup_vm_ops(struct dsi_panel *panel, bool trusted_vm_env)
 		panel->panel_ops.bl_register = dsi_panel_vm_stub;
 		panel->panel_ops.bl_unregister = dsi_panel_vm_stub;
 		panel->panel_ops.parse_gpios = dsi_panel_vm_stub;
-		panel->panel_ops.parse_power_cfg = dsi_panel_vm_stub;
 	} else {
 		panel->panel_ops.pinctrl_init = dsi_panel_pinctrl_init;
 		panel->panel_ops.gpio_request = dsi_panel_gpio_request;
@@ -3433,7 +3586,6 @@ static void dsi_panel_setup_vm_ops(struct dsi_panel *panel, bool trusted_vm_env)
 		panel->panel_ops.bl_register = dsi_panel_bl_register;
 		panel->panel_ops.bl_unregister = dsi_panel_bl_unregister;
 		panel->panel_ops.parse_gpios = dsi_panel_parse_gpios;
-		panel->panel_ops.parse_power_cfg = dsi_panel_parse_power_cfg;
 	}
 }
 
@@ -3514,13 +3666,7 @@ struct dsi_panel *dsi_panel_get(struct device *parent,
 		goto error;
 	}
 
-	rc = dsi_panel_parse_tlmm_gpio(panel);
-	if (rc) {
-		DSI_ERR("failed to parse panel tlmm gpios, rc=%d\n", rc);
-		goto error;
-	}
-
-	rc = panel->panel_ops.parse_power_cfg(panel);
+	rc = dsi_panel_parse_power_cfg(panel);
 	if (rc)
 		DSI_ERR("failed to parse power config, rc=%d\n", rc);
 
@@ -3678,7 +3824,6 @@ int dsi_panel_drv_deinit(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to put regs, rc=%d\n", panel->name, rc);
 
-	kfree(panel->tlmm_gpio);
 	panel->host = NULL;
 	memset(&panel->mipi_device, 0x0, sizeof(panel->mipi_device));
 
@@ -4208,6 +4353,13 @@ int dsi_panel_update_pps(struct dsi_panel *panel)
 			goto error;
 		}
 	}
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_mp_panel()) {
+		pr_info("qcom pps table:\n");
+		print_hex_dump(KERN_INFO, "", DUMP_PREFIX_NONE, 16, 4,
+			set->cmds->msg.tx_buf, set->cmds->msg.tx_len, false);
+	}
+#endif
 
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_PPS);
 	if (rc) {
@@ -4249,6 +4401,17 @@ int dsi_panel_set_lp1(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_LP1 cmd, rc=%d\n",
 		       panel->name, rc);
+
+
+	panel->aod_state = true;
+	panel->aod_first_time = true;
+
+//Bottom USB RT1715 +++
+#if defined ASUS_ZS673KS_PROJECT
+	rt_send_screen_suspend();
+#endif
+//Bottom USB RT1715 ---
+
 exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -4271,6 +4434,13 @@ int dsi_panel_set_lp2(struct dsi_panel *panel)
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_LP2 cmd, rc=%d\n",
 		       panel->name, rc);
+
+//Bottom USB RT1715 +++
+#if defined ASUS_ZS673KS_PROJECT
+	rt_send_screen_suspend();
+#endif
+//Bottom USB RT1715 ---
+
 exit:
 	mutex_unlock(&panel->panel_lock);
 	return rc;
@@ -4297,11 +4467,82 @@ int dsi_panel_set_nolp(struct dsi_panel *panel)
 	     panel->power_mode == SDE_MODE_DPMS_LP2))
 		dsi_pwr_panel_regulator_mode_set(&panel->power_info,
 			"ibb", REGULATOR_MODE_NORMAL);
-	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_NOLP);
-	if (rc)
+
+	if(!panel->has_enter_aod_before)  {
+		DSI_LOG(" has_enter_aod_before is false , send AOD OTHER & DSI_CMD_SET_TIMING_SWITCH \n");
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_AOD_OTHER);
+		if (rc) {
+			DSI_ERR("[%s] failed to send DSI_CMD_SET_AOD_OTHER cmd, rc=%d\n",panel->name, rc);
+		}else {
+			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_TIMING_SWITCH);
+			if (rc) {
+				DSI_ERR("[%s] failed to send DSI_CMD_SET_TIMING_SWITCH cmd, rc=%d\n",panel->name, rc);
+			}
+		}
+		goto exit;
+	}
+		
+	DSI_LOG("Will enter NOLP mode !\n");
+	
+#if defined ASUS_SAKE_PROJECT
+	if(1 == g_lcd_stage_id) {
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_NOLP);
+		panel->has_enter_aod_before = false;
+	} else {
+		if(panel->panel_fod_hbm_mode == 0) {
+			DSI_LOG("Send DSI_CMD_SET_ER2_NOLP\n");
+			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ER2_NOLP);
+			panel->has_enter_aod_before = false;
+		}else {
+			DSI_LOG("Send DSI_CMD_SET_ER2_FOD_NOLP\n");
+			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ER2_FOD_NOLP);
+			panel->has_enter_aod_before = false;
+		}
+	}
+#else
+	if(panel->panel_fod_hbm_mode == 0) {
+		DSI_LOG("Send DSI_CMD_SET_NOLP\n");
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_NOLP);
+		panel->has_enter_aod_before = false;
+	}else {
+		DSI_LOG("Send DSI_CMD_SET_ER2_FOD_NOLP\n");
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ER2_FOD_NOLP);
+		panel->has_enter_aod_before = false;
+	}
+#endif
+
+	if (rc) {
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_NOLP cmd, rc=%d\n",
 		       panel->name, rc);
+		panel->has_enter_aod_before = true;
+	}
+	
 exit:
+
+	panel->aod_state = false;
+	
+#if defined ASUS_SAKE_PROJECT || defined ASUS_VODKA_PROJECT
+	// to avoid panel in display off
+	if (panel->fod_in_doze) {
+		DSI_LOG("fod_in_doze (%d), set display on\n", panel->fod_in_doze);
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_AOD_OTHER);
+#if defined ASUS_VODKA_PROJECT
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_FOD_HBM_ON);
+#else
+		if(1 == g_lcd_stage_id) {
+			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_FOD_HBM_ON);
+		}else {
+			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_FOD_ER2_HBM_ON);
+		}
+#endif
+
+		if (rc)
+			DSI_ERR("[%s] failed to send DSI_CMD_SET_POST_FOD_HBM_ON cmd, rc=%d\n",panel->name, rc);
+		
+		panel->fod_in_doze = false;
+	}
+#endif
+
 	mutex_unlock(&panel->panel_lock);
 	return rc;
 }
@@ -4590,7 +4831,17 @@ int dsi_panel_switch(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_mp_panel()) {
+		rc = iris_switch(panel,
+				&(panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_TIMING_SWITCH]),
+				&panel->cur_mode->timing);
+	} else {
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_TIMING_SWITCH);
+	}
+#else
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_TIMING_SWITCH);
+#endif
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_TIMING_SWITCH cmds, rc=%d\n",
 		       panel->name, rc);
@@ -4630,7 +4881,24 @@ int dsi_panel_enable(struct dsi_panel *panel)
 
 	mutex_lock(&panel->panel_lock);
 
+#if defined(CONFIG_PXLW_IRIS)
+	if (iris_is_mp_panel())
+		rc = iris_enable(panel, &(panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_ON]));
+	else
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ON);
+#else
+
+#if defined ASUS_SAKE_PROJECT
+	if(1 == g_lcd_stage_id) {
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ER1_ON);
+	} else {
+		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ON);
+	}
+#else
 	rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_ON);
+#endif
+
+#endif
 	if (rc)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_ON cmds, rc=%d\n",
 		       panel->name, rc);
@@ -4710,7 +4978,14 @@ int dsi_panel_disable(struct dsi_panel *panel)
 			panel->power_mode == SDE_MODE_DPMS_LP2))
 			dsi_pwr_panel_regulator_mode_set(&panel->power_info,
 				"ibb", REGULATOR_MODE_STANDBY);
+#if defined(CONFIG_PXLW_IRIS)
+		if (iris_is_mp_panel())
+			rc = iris_disable(panel, &(panel->cur_mode->priv_info->cmd_sets[DSI_CMD_SET_OFF]));
+		else
+			rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_OFF);
+#else
 		rc = dsi_panel_tx_cmd_set(panel, DSI_CMD_SET_OFF);
+#endif
 		if (rc) {
 			/*
 			 * Sending panel off commands may fail when  DSI
